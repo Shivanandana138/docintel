@@ -39,13 +39,23 @@ type DocumentData = {
   text: string;
 };
 
+type Analysis = {
+  summary: string;
+  keywords: string[];
+  actionItems: string[];
+  sentiment: "positive" | "neutral" | "negative" | "mixed";
+};
+
 export default function Home() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [pastedText, setPastedText] = useState("");
   const [documentData, setDocumentData] = useState<DocumentData | null>(null);
+  const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [message, setMessage] = useState("");
+  const [isProcessing, setIsProcessing] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState("");
+  const [analysisError, setAnalysisError] = useState("");
 
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
@@ -54,6 +64,13 @@ export default function Home() {
         "Upload a PDF or TXT file, or paste text below. Then I can help you understand the document.",
     },
   ]);
+
+  const clearPreviousResults = () => {
+    setDocumentData(null);
+    setAnalysis(null);
+    setError("");
+    setAnalysisError("");
+  };
 
   const onDrop = (acceptedFiles: File[]) => {
     const file = acceptedFiles[0];
@@ -64,8 +81,7 @@ export default function Home() {
 
     setSelectedFile(file);
     setPastedText("");
-    setDocumentData(null);
-    setError("");
+    clearPreviousResults();
   };
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -78,14 +94,35 @@ export default function Home() {
   });
 
   const hasInput = Boolean(selectedFile) || pastedText.trim().length > 0;
+  const isWorking = isProcessing || isAnalyzing;
+
+  async function requestAnalysis(text: string) {
+    const response = await fetch("/api/analyze", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ text }),
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(result.error || "Unable to analyze the document.");
+    }
+
+    return result.analysis as Analysis;
+  }
 
   async function handleAnalyze() {
     if (!hasInput) {
       return;
     }
 
-    setIsAnalyzing(true);
+    setIsProcessing(true);
     setError("");
+    setAnalysis(null);
+    setAnalysisError("");
 
     try {
       const formData = new FormData();
@@ -96,25 +133,63 @@ export default function Home() {
         formData.append("text", pastedText.trim());
       }
 
-      const response = await fetch("/api/upload", {
+      const uploadResponse = await fetch("/api/upload", {
         method: "POST",
         body: formData,
       });
 
-      const result = await response.json();
+      const uploadResult = await uploadResponse.json();
 
-      if (!response.ok) {
-        throw new Error(result.error || "Document processing failed.");
+      if (!uploadResponse.ok) {
+        throw new Error(uploadResult.error || "Document processing failed.");
       }
 
-      setDocumentData(result.document);
+      const processedDocument = uploadResult.document as DocumentData;
+
+      setDocumentData(processedDocument);
 
       setMessages([
         {
           role: "assistant",
-          content: `I processed "${result.document.name}". It contains ${result.document.wordCount} words and ${result.document.characterCount} characters. You can now ask questions about it.`,
+          content: `I processed "${processedDocument.name}". It contains ${processedDocument.wordCount} words and ${processedDocument.characterCount} characters. I am generating AI insights now.`,
         },
       ]);
+
+      setIsProcessing(false);
+      setIsAnalyzing(true);
+
+      try {
+        const generatedAnalysis = await requestAnalysis(processedDocument.text);
+
+        setAnalysis(generatedAnalysis);
+
+        setMessages((currentMessages) => [
+          ...currentMessages,
+          {
+            role: "assistant",
+            content:
+              "Document insights are ready. Review the summary, keywords, sentiment, and action items in the right panel.",
+          },
+        ]);
+      } catch (analysisRequestError) {
+        const errorMessage =
+          analysisRequestError instanceof Error
+            ? analysisRequestError.message
+            : "Unable to generate AI insights.";
+
+        setAnalysisError(errorMessage);
+
+        setMessages((currentMessages) => [
+          ...currentMessages,
+          {
+            role: "assistant",
+            content:
+              "The document was processed, but I could not generate AI insights. Please check the API configuration and try again.",
+          },
+        ]);
+      } finally {
+        setIsAnalyzing(false);
+      }
     } catch (uploadError) {
       const errorMessage =
         uploadError instanceof Error
@@ -123,7 +198,7 @@ export default function Home() {
 
       setError(errorMessage);
     } finally {
-      setIsAnalyzing(false);
+      setIsProcessing(false);
     }
   }
 
@@ -157,7 +232,7 @@ export default function Home() {
       {
         role: "assistant",
         content:
-          "Your document has been processed successfully. In the next RAG milestone, this answer will be generated from relevant sections of your document.",
+          "Your document is processed. In the next RAG milestone, I will answer this question using relevant sections from the document.",
       },
     ]);
 
@@ -191,7 +266,9 @@ export default function Home() {
             </div>
 
             <div>
-              <h1 className="text-lg font-semibold tracking-tight">DocIntel</h1>
+              <h1 className="text-lg font-semibold tracking-tight">
+                DocIntel
+              </h1>
               <p className="text-sm text-slate-500">
                 Context-aware document assistant
               </p>
@@ -273,8 +350,7 @@ export default function Home() {
                   onChange={(event) => {
                     setPastedText(event.target.value);
                     setSelectedFile(null);
-                    setDocumentData(null);
-                    setError("");
+                    clearPreviousResults();
                   }}
                   placeholder="Paste meeting notes, a report, an article, or another text document..."
                   className="min-h-36 resize-none"
@@ -287,15 +363,26 @@ export default function Home() {
                 </p>
               ) : null}
 
+              {analysisError ? (
+                <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                  Document processed, but AI insights failed: {analysisError}
+                </p>
+              ) : null}
+
               <Button
                 className="w-full"
                 onClick={handleAnalyze}
-                disabled={isAnalyzing || !hasInput}
+                disabled={isWorking || !hasInput}
               >
-                {isAnalyzing ? (
+                {isProcessing ? (
                   <>
                     <Loader2 className="size-4 animate-spin" />
                     Processing document...
+                  </>
+                ) : isAnalyzing ? (
+                  <>
+                    <Loader2 className="size-4 animate-spin" />
+                    Generating insights...
                   </>
                 ) : (
                   <>
@@ -393,9 +480,13 @@ export default function Home() {
                   )}
 
                   <span className="text-sm font-medium text-slate-700">
-                    {documentData
-                      ? "Document processed"
-                      : "Ready to analyze"}
+                    {isProcessing
+                      ? "Processing document"
+                      : isAnalyzing
+                        ? "Generating AI insights"
+                        : documentData
+                          ? "Document processed"
+                          : "Ready to analyze"}
                   </span>
                 </div>
               </div>
@@ -455,11 +546,80 @@ export default function Home() {
                 </p>
 
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <Badge variant="secondary">Summary</Badge>
-                  <Badge variant="secondary">Keywords</Badge>
-                  <Badge variant="secondary">Action items</Badge>
+                  {isAnalyzing ? (
+                    <Badge variant="secondary" className="gap-1">
+                      <Loader2 className="size-3 animate-spin" />
+                      Analyzing...
+                    </Badge>
+                  ) : analysis && analysis.keywords.length > 0 ? (
+                    analysis.keywords.map((keyword) => (
+                      <Badge key={keyword} variant="secondary">
+                        {keyword}
+                      </Badge>
+                    ))
+                  ) : (
+                    <span className="text-sm text-slate-500">
+                      {documentData
+                        ? "No AI tags generated yet."
+                        : "Upload a document to generate tags."}
+                    </span>
+                  )}
                 </div>
               </div>
+
+              {analysis ? (
+                <>
+                  <Separator />
+
+                  <div>
+                    <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
+                      AI summary
+                    </p>
+
+                    <p className="mt-2 text-sm leading-6 text-slate-600">
+                      {analysis.summary}
+                    </p>
+                  </div>
+
+                  <Separator />
+
+                  <div>
+                    <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
+                      Sentiment
+                    </p>
+
+                    <Badge variant="secondary" className="mt-3 capitalize">
+                      {analysis.sentiment}
+                    </Badge>
+                  </div>
+
+                  <Separator />
+
+                  <div>
+                    <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
+                      Action items
+                    </p>
+
+                    {analysis.actionItems.length > 0 ? (
+                      <ul className="mt-3 space-y-2 text-sm leading-6 text-slate-600">
+                        {analysis.actionItems.map((item, index) => (
+                          <li
+                            key={`${item}-${index}`}
+                            className="flex gap-2"
+                          >
+                            <span className="text-indigo-600">•</span>
+                            <span>{item}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="mt-2 text-sm leading-6 text-slate-500">
+                        No explicit action items found.
+                      </p>
+                    )}
+                  </div>
+                </>
+              ) : null}
 
               <Separator />
 
