@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useDropzone } from "react-dropzone";
 import {
   Bot,
+  CheckCircle2,
   FileText,
   FolderOpen,
   Loader2,
@@ -24,6 +25,16 @@ import { Textarea } from "@/components/ui/textarea";
 type ChatMessage = {
   role: "assistant" | "user";
   content: string;
+};
+type DocumentData = {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  characterCount: number;
+  wordCount: number;
+  preview: string;
+  text: string;
 };
 
 export default function Home() {
@@ -59,27 +70,58 @@ export default function Home() {
   });
 
   const hasDocument = Boolean(selectedFile) || pastedText.trim().length > 0;
+  const [documentData, setDocumentData] = useState<DocumentData | null>(null);
+  const [error, setError] = useState("");
 
-  function handleAnalyze() {
-    if (!hasDocument) {
-      return;
+  async function handleAnalyze() {
+  const hasInput = Boolean(selectedFile) || pastedText.trim().length > 0;
+
+  if (!hasInput) {
+    return;
+  }
+
+  setIsAnalyzing(true);
+  setError("");
+
+  try {
+    const formData = new FormData();
+
+    if (selectedFile) {
+      formData.append("file", selectedFile);
+    } else {
+      formData.append("text", pastedText.trim());
     }
 
-    setIsAnalyzing(true);
+    const response = await fetch("/api/upload", {
+      method: "POST",
+      body: formData,
+    });
 
-    window.setTimeout(() => {
-      setIsAnalyzing(false);
+    const result = await response.json();
 
-      setMessages((currentMessages) => [
-        ...currentMessages,
-        {
-          role: "assistant",
-          content:
-            "Your document is ready for analysis. This is a UI demo for now. Next, we will add real PDF/text parsing and AI-powered analysis.",
-        },
-      ]);
-    }, 900);
+    if (!response.ok) {
+      throw new Error(result.error || "Document processing failed.");
+    }
+
+    setDocumentData(result.document);
+
+    setMessages([
+      {
+        role: "assistant",
+        content: `I processed "${result.document.name}". It contains ${result.document.wordCount} words and ${result.document.characterCount} characters. You can now ask questions about it.`,
+      },
+    ]);
+  } catch (uploadError) {
+    const errorMessage =
+      uploadError instanceof Error
+        ? uploadError.message
+        : "Something went wrong while processing the document.";
+
+    setError(errorMessage);
+  } finally {
+    setIsAnalyzing(false);
   }
+}
 
   function handleSendMessage() {
     const cleanMessage = message.trim();
@@ -211,7 +253,11 @@ export default function Home() {
                   className="min-h-36 resize-none"
                 />
               </div>
-
+              {error ? (
+                <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {error}
+                </p>
+              ) : null}
               <Button
                 className="w-full"
                 onClick={handleAnalyze}
