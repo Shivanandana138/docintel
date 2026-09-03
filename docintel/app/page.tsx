@@ -26,11 +26,13 @@ type ChatMessage = {
   role: "assistant" | "user";
   content: string;
 };
+
 type DocumentData = {
   id: string;
   name: string;
   type: string;
   size: number;
+  pageCount: number | null;
   characterCount: number;
   wordCount: number;
   preview: string;
@@ -40,24 +42,30 @@ type DocumentData = {
 export default function Home() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [pastedText, setPastedText] = useState("");
+  const [documentData, setDocumentData] = useState<DocumentData | null>(null);
   const [message, setMessage] = useState("");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [error, setError] = useState("");
 
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: "assistant",
       content:
-        "Upload a PDF or text file, or paste text below. Then ask me questions about the document.",
+        "Upload a PDF or TXT file, or paste text below. Then I can help you understand the document.",
     },
   ]);
 
   const onDrop = (acceptedFiles: File[]) => {
     const file = acceptedFiles[0];
 
-    if (file) {
-      setSelectedFile(file);
-      setPastedText("");
+    if (!file) {
+      return;
     }
+
+    setSelectedFile(file);
+    setPastedText("");
+    setDocumentData(null);
+    setError("");
   };
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -69,64 +77,74 @@ export default function Home() {
     },
   });
 
-  const hasDocument = Boolean(selectedFile) || pastedText.trim().length > 0;
-  const [documentData, setDocumentData] = useState<DocumentData | null>(null);
-  const [error, setError] = useState("");
-
-  async function handleAnalyze() {
   const hasInput = Boolean(selectedFile) || pastedText.trim().length > 0;
 
-  if (!hasInput) {
-    return;
-  }
-
-  setIsAnalyzing(true);
-  setError("");
-
-  try {
-    const formData = new FormData();
-
-    if (selectedFile) {
-      formData.append("file", selectedFile);
-    } else {
-      formData.append("text", pastedText.trim());
+  async function handleAnalyze() {
+    if (!hasInput) {
+      return;
     }
 
-    const response = await fetch("/api/upload", {
-      method: "POST",
-      body: formData,
-    });
+    setIsAnalyzing(true);
+    setError("");
 
-    const result = await response.json();
+    try {
+      const formData = new FormData();
 
-    if (!response.ok) {
-      throw new Error(result.error || "Document processing failed.");
+      if (selectedFile) {
+        formData.append("file", selectedFile);
+      } else {
+        formData.append("text", pastedText.trim());
+      }
+
+      const response = await fetch("/api/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || "Document processing failed.");
+      }
+
+      setDocumentData(result.document);
+
+      setMessages([
+        {
+          role: "assistant",
+          content: `I processed "${result.document.name}". It contains ${result.document.wordCount} words and ${result.document.characterCount} characters. You can now ask questions about it.`,
+        },
+      ]);
+    } catch (uploadError) {
+      const errorMessage =
+        uploadError instanceof Error
+          ? uploadError.message
+          : "Something went wrong while processing the document.";
+
+      setError(errorMessage);
+    } finally {
+      setIsAnalyzing(false);
     }
-
-    setDocumentData(result.document);
-
-    setMessages([
-      {
-        role: "assistant",
-        content: `I processed "${result.document.name}". It contains ${result.document.wordCount} words and ${result.document.characterCount} characters. You can now ask questions about it.`,
-      },
-    ]);
-  } catch (uploadError) {
-    const errorMessage =
-      uploadError instanceof Error
-        ? uploadError.message
-        : "Something went wrong while processing the document.";
-
-    setError(errorMessage);
-  } finally {
-    setIsAnalyzing(false);
   }
-}
 
   function handleSendMessage() {
     const cleanMessage = message.trim();
 
     if (!cleanMessage) {
+      return;
+    }
+
+    if (!documentData) {
+      setMessages((currentMessages) => [
+        ...currentMessages,
+        {
+          role: "assistant",
+          content:
+            "Please analyze a document first. Then I can answer questions about its content.",
+        },
+      ]);
+
+      setMessage("");
       return;
     }
 
@@ -139,22 +157,29 @@ export default function Home() {
       {
         role: "assistant",
         content:
-          "This is a demo response. In the RAG phase, DocIntel will retrieve relevant text from your document before answering.",
+          "Your document has been processed successfully. In the next RAG milestone, this answer will be generated from relevant sections of your document.",
       },
     ]);
 
     setMessage("");
   }
 
-  const documentFormat = selectedFile
-    ? selectedFile.name.split(".").pop()?.toUpperCase()
-    : pastedText.trim()
-      ? "TEXT"
-      : "—";
+  const displayedFileName =
+    documentData?.name || selectedFile?.name || "No file selected";
 
-  const documentLength = pastedText.trim()
-    ? `${pastedText.trim().length} characters`
-    : "—";
+  const displayedFileType =
+    documentData?.type ||
+    (selectedFile
+      ? selectedFile.name.split(".").pop()?.toUpperCase()
+      : pastedText.trim()
+        ? "TEXT"
+        : "—");
+
+  const displayedTextLength = documentData
+    ? `${documentData.characterCount} characters`
+    : pastedText.trim()
+      ? `${pastedText.trim().length} characters`
+      : "—";
 
   return (
     <main className="min-h-screen bg-slate-50 text-slate-950">
@@ -181,7 +206,7 @@ export default function Home() {
       </header>
 
       <div className="mx-auto grid max-w-7xl gap-6 px-6 py-8 lg:grid-cols-[1.1fr_1.4fr_0.9fr]">
-        <section className="space-y-6">
+        <section>
           <Card className="border-slate-200 shadow-sm">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-base">
@@ -248,25 +273,29 @@ export default function Home() {
                   onChange={(event) => {
                     setPastedText(event.target.value);
                     setSelectedFile(null);
+                    setDocumentData(null);
+                    setError("");
                   }}
                   placeholder="Paste meeting notes, a report, an article, or another text document..."
                   className="min-h-36 resize-none"
                 />
               </div>
+
               {error ? (
                 <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
                   {error}
                 </p>
               ) : null}
+
               <Button
                 className="w-full"
                 onClick={handleAnalyze}
-                disabled={isAnalyzing || !hasDocument}
+                disabled={isAnalyzing || !hasInput}
               >
                 {isAnalyzing ? (
                   <>
                     <Loader2 className="size-4 animate-spin" />
-                    Preparing document...
+                    Processing document...
                   </>
                 ) : (
                   <>
@@ -357,9 +386,16 @@ export default function Home() {
                 </p>
 
                 <div className="mt-2 flex items-center gap-2">
-                  <span className="size-2 rounded-full bg-amber-500" />
+                  {documentData ? (
+                    <CheckCircle2 className="size-4 text-emerald-600" />
+                  ) : (
+                    <span className="size-2 rounded-full bg-amber-500" />
+                  )}
+
                   <span className="text-sm font-medium text-slate-700">
-                    {hasDocument ? "Ready to analyze" : "Waiting for document"}
+                    {documentData
+                      ? "Document processed"
+                      : "Ready to analyze"}
                   </span>
                 </div>
               </div>
@@ -375,21 +411,37 @@ export default function Home() {
                   <div className="flex justify-between gap-4">
                     <dt className="text-slate-500">File</dt>
                     <dd className="max-w-40 truncate font-medium text-slate-700">
-                      {selectedFile?.name || "No file selected"}
+                      {displayedFileName}
                     </dd>
                   </div>
 
                   <div className="flex justify-between gap-4">
                     <dt className="text-slate-500">Format</dt>
                     <dd className="font-medium text-slate-700">
-                      {documentFormat}
+                      {displayedFileType}
+                    </dd>
+                  </div>
+
+                  {documentData?.pageCount ? (
+                    <div className="flex justify-between gap-4">
+                      <dt className="text-slate-500">Pages</dt>
+                      <dd className="font-medium text-slate-700">
+                        {documentData.pageCount}
+                      </dd>
+                    </div>
+                  ) : null}
+
+                  <div className="flex justify-between gap-4">
+                    <dt className="text-slate-500">Words</dt>
+                    <dd className="font-medium text-slate-700">
+                      {documentData ? documentData.wordCount : "—"}
                     </dd>
                   </div>
 
                   <div className="flex justify-between gap-4">
                     <dt className="text-slate-500">Text length</dt>
                     <dd className="font-medium text-slate-700">
-                      {documentLength}
+                      {displayedTextLength}
                     </dd>
                   </div>
                 </dl>
@@ -413,12 +465,17 @@ export default function Home() {
 
               <div>
                 <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
-                  AI summary
+                  Text preview
                 </p>
 
                 <p className="mt-2 text-sm leading-6 text-slate-600">
-                  Upload a document to generate a concise summary, key themes,
-                  important facts, and actionable follow-ups.
+                  {documentData
+                    ? `${documentData.preview}${
+                        documentData.text.length > documentData.preview.length
+                          ? "..."
+                          : ""
+                      }`
+                    : "Upload a document to see an extracted-text preview here."}
                 </p>
               </div>
             </CardContent>

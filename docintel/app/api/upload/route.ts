@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import "pdf-parse/worker";
+import { PDFParse } from "pdf-parse";
 
 export const runtime = "nodejs";
 
@@ -14,6 +16,20 @@ function countWords(text: string) {
   return normalizedText.split(/\s+/).length;
 }
 
+function isPdfFile(file: File) {
+  return (
+    file.type === "application/pdf" ||
+    file.name.toLowerCase().endsWith(".pdf")
+  );
+}
+
+function isTextFile(file: File) {
+  return (
+    file.type === "text/plain" ||
+    file.name.toLowerCase().endsWith(".txt")
+  );
+}
+
 export async function POST(request: Request) {
   try {
     const formData = await request.formData();
@@ -25,6 +41,7 @@ export async function POST(request: Request) {
     let name = "Pasted text";
     let type = "TEXT";
     let size = 0;
+    let pageCount: number | null = null;
 
     if (uploadedFile instanceof File) {
       if (uploadedFile.size > MAX_FILE_SIZE_BYTES) {
@@ -36,24 +53,34 @@ export async function POST(request: Request) {
         );
       }
 
-      const isTxtFile =
-        uploadedFile.type === "text/plain" ||
-        uploadedFile.name.toLowerCase().endsWith(".txt");
+      name = uploadedFile.name;
+      size = uploadedFile.size;
 
-      if (!isTxtFile) {
+      if (isTextFile(uploadedFile)) {
+        rawText = await uploadedFile.text();
+        type = "TXT";
+      } else if (isPdfFile(uploadedFile)) {
+        const arrayBuffer = await uploadedFile.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+
+        const parser = new PDFParse({ data: buffer });
+        const pdfResult = await parser.getText();
+
+        rawText = pdfResult.text;
+        pageCount = pdfResult.total;
+
+        await parser.destroy();
+
+        type = "PDF";
+      } else {
         return NextResponse.json(
           {
             error:
-              "Only TXT files are supported right now. PDF support is the next milestone.",
+              "Unsupported file type. Please upload a PDF file or a TXT file.",
           },
           { status: 415 }
         );
       }
-
-      rawText = await uploadedFile.text();
-      name = uploadedFile.name;
-      type = "TXT";
-      size = uploadedFile.size;
     } else if (typeof pastedText === "string" && pastedText.trim()) {
       rawText = pastedText.trim();
       name = "Pasted text";
@@ -62,7 +89,7 @@ export async function POST(request: Request) {
     } else {
       return NextResponse.json(
         {
-          error: "Upload a TXT file or paste text before analyzing.",
+          error: "Upload a PDF/TXT file or paste text before analyzing.",
         },
         { status: 400 }
       );
@@ -71,12 +98,12 @@ export async function POST(request: Request) {
     const text = rawText.replace(/\s+/g, " ").trim();
 
     if (!text) {
-      return NextResponse.json(
-        {
-          error: "The document does not contain readable text.",
-        },
-        { status: 400 }
-      );
+      const error =
+        type === "PDF"
+          ? "No readable text was found in this PDF. It may be scanned and require OCR."
+          : "The document does not contain readable text.";
+
+      return NextResponse.json({ error }, { status: 400 });
     }
 
     return NextResponse.json({
@@ -86,6 +113,7 @@ export async function POST(request: Request) {
         name,
         type,
         size,
+        pageCount,
         characterCount: text.length,
         wordCount: countWords(text),
         preview: text.slice(0, 400),
@@ -97,7 +125,8 @@ export async function POST(request: Request) {
 
     return NextResponse.json(
       {
-        error: "Unable to process the document. Please try again.",
+        error:
+          "Unable to process the document. Make sure the file is not damaged and try again.",
       },
       { status: 500 }
     );
