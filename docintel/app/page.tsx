@@ -54,6 +54,7 @@ export default function Home() {
   const [message, setMessage] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isChatLoading, setIsChatLoading] = useState(false);
   const [error, setError] = useState("");
   const [analysisError, setAnalysisError] = useState("");
 
@@ -168,7 +169,7 @@ export default function Home() {
           {
             role: "assistant",
             content:
-              "Document insights are ready. Review the summary, keywords, sentiment, and action items in the right panel.",
+              "Document insights are ready. You can now ask questions about the document.",
           },
         ]);
       } catch (analysisRequestError) {
@@ -184,7 +185,7 @@ export default function Home() {
           {
             role: "assistant",
             content:
-              "The document was processed, but I could not generate AI insights. Please check the API configuration and try again.",
+              "The document was processed, but AI insights could not be generated. You can still try asking a question about the document.",
           },
         ]);
       } finally {
@@ -202,10 +203,10 @@ export default function Home() {
     }
   }
 
-  function handleSendMessage() {
+  async function handleSendMessage() {
     const cleanMessage = message.trim();
 
-    if (!cleanMessage) {
+    if (!cleanMessage || isChatLoading) {
       return;
     }
 
@@ -229,14 +230,52 @@ export default function Home() {
         role: "user",
         content: cleanMessage,
       },
-      {
-        role: "assistant",
-        content:
-          "Your document is processed. In the next RAG milestone, I will answer this question using relevant sections from the document.",
-      },
     ]);
 
     setMessage("");
+    setIsChatLoading(true);
+
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          question: cleanMessage,
+          documentText: documentData.text,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || "Unable to answer the question.");
+      }
+
+      setMessages((currentMessages) => [
+        ...currentMessages,
+        {
+          role: "assistant",
+          content: result.answer,
+        },
+      ]);
+    } catch (chatError) {
+      const errorMessage =
+        chatError instanceof Error
+          ? chatError.message
+          : "Unable to answer the question. Please try again.";
+
+      setMessages((currentMessages) => [
+        ...currentMessages,
+        {
+          role: "assistant",
+          content: `Sorry, I could not answer that question: ${errorMessage}`,
+        },
+      ]);
+    } finally {
+      setIsChatLoading(false);
+    }
   }
 
   const displayedFileName =
@@ -431,6 +470,15 @@ export default function Home() {
                       </div>
                     </div>
                   ))}
+
+                  {isChatLoading ? (
+                    <div className="flex justify-start">
+                      <div className="flex items-center gap-2 rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-600">
+                        <Loader2 className="size-4 animate-spin" />
+                        Reading your document...
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               </ScrollArea>
 
@@ -440,19 +488,25 @@ export default function Home() {
                     value={message}
                     onChange={(event) => setMessage(event.target.value)}
                     onKeyDown={(event) => {
-                      if (event.key === "Enter") {
+                      if (event.key === "Enter" && !isChatLoading) {
                         handleSendMessage();
                       }
                     }}
                     placeholder="Ask a question about your document..."
+                    disabled={isChatLoading}
                   />
 
                   <Button
                     size="icon"
                     onClick={handleSendMessage}
+                    disabled={isChatLoading || !message.trim()}
                     aria-label="Send message"
                   >
-                    <Send className="size-4" />
+                    {isChatLoading ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <Send className="size-4" />
+                    )}
                   </Button>
                 </div>
               </div>
