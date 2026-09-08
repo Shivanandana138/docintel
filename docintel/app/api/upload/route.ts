@@ -8,13 +8,9 @@ export const runtime = "nodejs";
 const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024;
 
 function countWords(text: string) {
-  const normalizedText = text.trim();
+  const cleanText = text.trim();
 
-  if (!normalizedText) {
-    return 0;
-  }
-
-  return normalizedText.split(/\s+/).length;
+  return cleanText ? cleanText.split(/\s+/).length : 0;
 }
 
 function isPdfFile(file: File) {
@@ -56,7 +52,7 @@ export async function POST(request: Request) {
 
     let rawText = "";
     let name = "Pasted text";
-    let type = "TEXT";
+    let type: "PDF" | "TXT" | "TEXT" = "TEXT";
     let size = 0;
     let pageCount: number | null = null;
 
@@ -113,15 +109,14 @@ export async function POST(request: Request) {
     if (!text) {
       const error =
         type === "PDF"
-          ? "No readable text was found in this PDF. It may be scanned and require OCR."
+          ? "No readable text was found in this PDF. It may be a scanned PDF and require OCR."
           : "The document does not contain readable text.";
 
       return NextResponse.json({ error }, { status: 400 });
     }
 
     const documentId = crypto.randomUUID();
-
-    const indexingResult = await indexDocument(documentId, text);
+    const { chunkCount } = await indexDocument(documentId, text);
 
     return NextResponse.json({
       success: true,
@@ -133,7 +128,7 @@ export async function POST(request: Request) {
         pageCount,
         characterCount: text.length,
         wordCount: countWords(text),
-        chunkCount: indexingResult.chunkCount,
+        chunkCount,
         preview: text.slice(0, 700),
         text,
       },

@@ -31,7 +31,7 @@ type ChatMessage = {
 type DocumentData = {
   id: string;
   name: string;
-  type: string;
+  type: "PDF" | "TXT" | "TEXT";
   size: number;
   pageCount: number | null;
   characterCount: number;
@@ -49,8 +49,9 @@ type Analysis = {
 };
 
 type ChatApiResponse = {
-  success: boolean;
-  answer: string;
+  success?: boolean;
+  answer?: string;
+  error?: string;
   sources?: Array<{
     chunkIndex: number;
     relevanceScore: number;
@@ -60,7 +61,7 @@ type ChatApiResponse = {
 const initialAssistantMessage: ChatMessage = {
   role: "assistant",
   content:
-    "Upload a PDF or TXT file, or paste text below. Then I can help you understand the document.",
+    "Upload a PDF or TXT file, or paste text below. I will index it into RAG chunks so you can ask document-based questions.",
 };
 
 export default function Home() {
@@ -185,7 +186,7 @@ export default function Home() {
           {
             role: "assistant",
             content:
-              "Document insights are ready. You can now ask questions about the document.",
+              "Document insights are ready. You can now ask questions using retrieved document sections.",
           },
         ]);
       } catch (analysisRequestError) {
@@ -201,7 +202,7 @@ export default function Home() {
           {
             role: "assistant",
             content:
-              "The document was processed and indexed for RAG, but AI insights could not be generated. You can still ask document questions.",
+              "The document was processed and RAG-indexed, but AI insights could not be generated. You can still ask document questions.",
           },
         ]);
       } finally {
@@ -232,7 +233,7 @@ export default function Home() {
         {
           role: "assistant",
           content:
-            "Please analyze a document first. Then I can answer questions using retrieved document sections.",
+            "Please analyze a document first. Then I can retrieve relevant sections and answer your question.",
         },
       ]);
 
@@ -266,20 +267,32 @@ export default function Home() {
       const result = (await response.json()) as ChatApiResponse;
 
       if (!response.ok) {
-        throw new Error(result.answer || "Unable to answer the question.");
+        throw new Error(
+          result.error || result.answer || "Unable to answer the question."
+        );
       }
 
-      const sourceNumbers =
-        result.sources?.map((source) => source.chunkIndex) || [];
+      if (!result.answer) {
+        throw new Error("The RAG service did not return an answer.");
+      }
 
-      setMessages((currentMessages) => [
-        ...currentMessages,
-        {
-          role: "assistant",
-          content: result.answer,
-          sources: sourceNumbers,
-        },
-      ]);
+   const answer = result.answer;
+
+if (!answer) {
+  throw new Error("The RAG service did not return an answer.");
+}
+
+const sourceNumbers =
+  result.sources?.map((source) => source.chunkIndex) || [];
+
+setMessages((currentMessages) => [
+  ...currentMessages,
+  {
+    role: "assistant",
+    content: answer,
+    sources: sourceNumbers,
+  },
+]);
     } catch (chatError) {
       const errorMessage =
         chatError instanceof Error
@@ -336,7 +349,7 @@ export default function Home() {
 
           <Badge variant="secondary" className="gap-1 px-3 py-1">
             <Bot className="size-3.5" />
-            AI workspace
+            RAG workspace
           </Badge>
         </div>
       </header>
@@ -424,7 +437,7 @@ export default function Home() {
 
               {analysisError ? (
                 <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                  Document processed and indexed, but AI insights failed:{" "}
+                  Document indexed successfully, but AI insights failed:{" "}
                   {analysisError}
                 </p>
               ) : null}
@@ -487,7 +500,9 @@ export default function Home() {
                             : "max-w-[85%] rounded-2xl bg-slate-100 px-4 py-3 text-sm leading-6 text-slate-700"
                         }
                       >
-                        <p>{chatMessage.content}</p>
+                        <p className="whitespace-pre-wrap">
+                          {chatMessage.content}
+                        </p>
 
                         {chatMessage.role === "assistant" &&
                         chatMessage.sources &&
@@ -721,7 +736,7 @@ export default function Home() {
                   Text preview
                 </p>
 
-                <p className="mt-2 text-sm leading-6 text-slate-600">
+                <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-600">
                   {documentData
                     ? `${documentData.preview}${
                         documentData.text.length > documentData.preview.length

@@ -9,6 +9,61 @@ type ChatRequest = {
   documentId?: unknown;
 };
 
+const CHAT_MODELS = [
+  process.env.GEMINI_CHAT_MODEL || "gemini-3.6-flash",
+  "gemini-3.6-flash-lite",
+];
+
+function isRetryableGeminiError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+
+  return /\b(429|500|502|503|504)\b|UNAVAILABLE|overloaded|high demand/i.test(
+    message
+  );
+}
+
+function isUnavailableModelError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+
+  return /\b404\b|NOT_FOUND|no longer available|model.*not found/i.test(
+    message
+  );
+}
+
+async function generateChatAnswer(ai: GoogleGenAI, prompt: string) {
+  let lastError: unknown;
+
+  for (const model of CHAT_MODELS) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        return await ai.models.generateContent({
+          model,
+          contents: prompt,
+          config: {
+            temperature: 0.2,
+          },
+        });
+      } catch (error) {
+        lastError = error;
+
+        if (!isRetryableGeminiError(error) && !isUnavailableModelError(error)) {
+          throw error;
+        }
+
+        if (isUnavailableModelError(error)) {
+          break;
+        }
+
+        if (attempt === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 400));
+        }
+      }
+    }
+  }
+
+  throw lastError;
+}
+
 export async function POST(request: Request) {
   try {
     const apiKey = process.env.GEMINI_API_KEY;
@@ -54,12 +109,10 @@ export async function POST(request: Request) {
       3
     );
 
-    const context = retrievedChunks
+    const retrievedContext = retrievedChunks
       .map(
         (chunk) =>
-          `[Source chunk ${chunk.chunkIndex} | relevance score: ${chunk.score.toFixed(
-            3
-          )}]
+          `[Retrieved document chunk ${chunk.chunkIndex}]
 
 ${chunk.text}`
       )
@@ -69,31 +122,28 @@ ${chunk.text}`
 
     const prompt = `You are DocIntel, a Retrieval-Augmented Generation document assistant.
 
-Answer the user's question using ONLY the retrieved document chunks below.
+Answer the user's question using ONLY the retrieved document chunks supplied below.
 
 Rules:
 - Do not use outside knowledge.
-- Do not invent facts.
+- Do not invent facts, formulas, or assumptions.
 - If the retrieved chunks do not contain the answer, say exactly:
 "I could not find that information in the retrieved document sections."
-- Keep the answer concise and useful.
-- End every answer with a separate line in this exact format:
-Sources: 1, 2
-- Use only the source chunk numbers that support your answer.
+- Keep answers concise, clear, and useful.
+- For broad requests such as "give the formulas" or "list formulas", group formulas by topic.
+- For broad formula requests, include at most 12 key formulas unless the user explicitly asks for every formula.
+- Use simple plain-text math where possible, for example: Area = pi × r².
+- Do not add a "Sources:" line.
+- Do not mention chunk numbers in your answer.
+- The application will show the actual retrieved chunks separately.
 
 Retrieved document chunks:
-${context}
+${retrievedContext}
 
-Question:
+User question:
 ${question}`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.8-flash",
-      contents: prompt,
-      config: {
-        temperature: 0.2,
-      },
-    });
+    const response = await generateChatAnswer(ai, prompt);
 
     const answer = response.text?.trim() || "";
 
@@ -118,11 +168,15 @@ ${question}`;
     const detailedMessage =
       error instanceof Error ? error.message : "Unknown RAG chat error.";
 
+    const isTemporaryProviderError = isRetryableGeminiError(error);
+
     return NextResponse.json(
       {
-        error: `Unable to answer from document retrieval: ${detailedMessage}`,
+        error: isTemporaryProviderError
+          ? "The AI service is temporarily busy. Please try your question again in a moment."
+          : `Unable to answer from document retrieval: ${detailedMessage}`,
       },
-      { status: 500 }
+      { status: isTemporaryProviderError ? 503 : 500 }
     );
   }
 }

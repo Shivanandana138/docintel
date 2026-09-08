@@ -97,17 +97,13 @@ export function chunkDocument(text: string) {
       continue;
     }
 
-    if (currentChunk) {
-      chunks.push(currentChunk.trim());
+    chunks.push(currentChunk.trim());
 
-      const overlap = currentChunk.slice(-CHUNK_OVERLAP).trim();
+    const overlap = currentChunk.slice(-CHUNK_OVERLAP).trim();
 
-      currentChunk = overlap
-        ? `${overlap} ${cleanSentence}`
-        : cleanSentence;
-    } else {
-      currentChunk = cleanSentence;
-    }
+    currentChunk = overlap
+      ? `${overlap} ${cleanSentence}`
+      : cleanSentence;
   }
 
   if (currentChunk.trim()) {
@@ -208,7 +204,7 @@ export async function retrieveRelevantChunks(
 
   if (!indexedChunks || indexedChunks.length === 0) {
     throw new Error(
-      "This document is not indexed in memory. Please analyze the document again before asking a question."
+      "This document is not indexed in memory. Re-upload and analyze it before asking a question."
     );
   }
 
