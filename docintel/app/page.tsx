@@ -25,6 +25,7 @@ import { Textarea } from "@/components/ui/textarea";
 type ChatMessage = {
   role: "assistant" | "user";
   content: string;
+  sources?: number[];
 };
 
 type DocumentData = {
@@ -35,6 +36,7 @@ type DocumentData = {
   pageCount: number | null;
   characterCount: number;
   wordCount: number;
+  chunkCount: number;
   preview: string;
   text: string;
 };
@@ -44,6 +46,21 @@ type Analysis = {
   keywords: string[];
   actionItems: string[];
   sentiment: "positive" | "neutral" | "negative" | "mixed";
+};
+
+type ChatApiResponse = {
+  success: boolean;
+  answer: string;
+  sources?: Array<{
+    chunkIndex: number;
+    relevanceScore: number;
+  }>;
+};
+
+const initialAssistantMessage: ChatMessage = {
+  role: "assistant",
+  content:
+    "Upload a PDF or TXT file, or paste text below. Then I can help you understand the document.",
 };
 
 export default function Home() {
@@ -59,19 +76,17 @@ export default function Home() {
   const [analysisError, setAnalysisError] = useState("");
 
   const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      role: "assistant",
-      content:
-        "Upload a PDF or TXT file, or paste text below. Then I can help you understand the document.",
-    },
+    initialAssistantMessage,
   ]);
 
-  const clearPreviousResults = () => {
+  function clearPreviousResults() {
     setDocumentData(null);
     setAnalysis(null);
     setError("");
     setAnalysisError("");
-  };
+    setMessage("");
+    setMessages([initialAssistantMessage]);
+  }
 
   const onDrop = (acceptedFiles: File[]) => {
     const file = acceptedFiles[0];
@@ -116,7 +131,7 @@ export default function Home() {
   }
 
   async function handleAnalyze() {
-    if (!hasInput) {
+    if (!hasInput || isWorking) {
       return;
     }
 
@@ -124,6 +139,7 @@ export default function Home() {
     setError("");
     setAnalysis(null);
     setAnalysisError("");
+    setMessages([initialAssistantMessage]);
 
     try {
       const formData = new FormData();
@@ -152,7 +168,7 @@ export default function Home() {
       setMessages([
         {
           role: "assistant",
-          content: `I processed "${processedDocument.name}". It contains ${processedDocument.wordCount} words and ${processedDocument.characterCount} characters. I am generating AI insights now.`,
+          content: `I processed "${processedDocument.name}". It contains ${processedDocument.wordCount} words, ${processedDocument.characterCount} characters, and was indexed into ${processedDocument.chunkCount} RAG chunks. I am generating AI insights now.`,
         },
       ]);
 
@@ -185,7 +201,7 @@ export default function Home() {
           {
             role: "assistant",
             content:
-              "The document was processed, but AI insights could not be generated. You can still try asking a question about the document.",
+              "The document was processed and indexed for RAG, but AI insights could not be generated. You can still ask document questions.",
           },
         ]);
       } finally {
@@ -216,7 +232,7 @@ export default function Home() {
         {
           role: "assistant",
           content:
-            "Please analyze a document first. Then I can answer questions about its content.",
+            "Please analyze a document first. Then I can answer questions using retrieved document sections.",
         },
       ]);
 
@@ -243,21 +259,25 @@ export default function Home() {
         },
         body: JSON.stringify({
           question: cleanMessage,
-          documentText: documentData.text,
+          documentId: documentData.id,
         }),
       });
 
-      const result = await response.json();
+      const result = (await response.json()) as ChatApiResponse;
 
       if (!response.ok) {
-        throw new Error(result.error || "Unable to answer the question.");
+        throw new Error(result.answer || "Unable to answer the question.");
       }
+
+      const sourceNumbers =
+        result.sources?.map((source) => source.chunkIndex) || [];
 
       setMessages((currentMessages) => [
         ...currentMessages,
         {
           role: "assistant",
           content: result.answer,
+          sources: sourceNumbers,
         },
       ]);
     } catch (chatError) {
@@ -404,7 +424,8 @@ export default function Home() {
 
               {analysisError ? (
                 <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                  Document processed, but AI insights failed: {analysisError}
+                  Document processed and indexed, but AI insights failed:{" "}
+                  {analysisError}
                 </p>
               ) : null}
 
@@ -416,7 +437,7 @@ export default function Home() {
                 {isProcessing ? (
                   <>
                     <Loader2 className="size-4 animate-spin" />
-                    Processing document...
+                    Processing and indexing...
                   </>
                 ) : isAnalyzing ? (
                   <>
@@ -466,7 +487,16 @@ export default function Home() {
                             : "max-w-[85%] rounded-2xl bg-slate-100 px-4 py-3 text-sm leading-6 text-slate-700"
                         }
                       >
-                        {chatMessage.content}
+                        <p>{chatMessage.content}</p>
+
+                        {chatMessage.role === "assistant" &&
+                        chatMessage.sources &&
+                        chatMessage.sources.length > 0 ? (
+                          <p className="mt-2 text-xs font-medium text-indigo-600">
+                            Retrieved chunks:{" "}
+                            {chatMessage.sources.join(", ")}
+                          </p>
+                        ) : null}
                       </div>
                     </div>
                   ))}
@@ -475,7 +505,7 @@ export default function Home() {
                     <div className="flex justify-start">
                       <div className="flex items-center gap-2 rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-600">
                         <Loader2 className="size-4 animate-spin" />
-                        Reading your document...
+                        Retrieving relevant document sections...
                       </div>
                     </div>
                   ) : null}
@@ -493,13 +523,15 @@ export default function Home() {
                       }
                     }}
                     placeholder="Ask a question about your document..."
-                    disabled={isChatLoading}
+                    disabled={isChatLoading || !documentData}
                   />
 
                   <Button
                     size="icon"
                     onClick={handleSendMessage}
-                    disabled={isChatLoading || !message.trim()}
+                    disabled={
+                      isChatLoading || !message.trim() || !documentData
+                    }
                     aria-label="Send message"
                   >
                     {isChatLoading ? (
@@ -527,7 +559,7 @@ export default function Home() {
                 </p>
 
                 <div className="mt-2 flex items-center gap-2">
-                  {documentData ? (
+                  {documentData && !isProcessing && !isAnalyzing ? (
                     <CheckCircle2 className="size-4 text-emerald-600" />
                   ) : (
                     <span className="size-2 rounded-full bg-amber-500" />
@@ -535,11 +567,11 @@ export default function Home() {
 
                   <span className="text-sm font-medium text-slate-700">
                     {isProcessing
-                      ? "Processing document"
+                      ? "Processing and indexing document"
                       : isAnalyzing
                         ? "Generating AI insights"
                         : documentData
-                          ? "Document processed"
+                          ? "Document processed and RAG indexed"
                           : "Ready to analyze"}
                   </span>
                 </div>
@@ -580,6 +612,13 @@ export default function Home() {
                     <dt className="text-slate-500">Words</dt>
                     <dd className="font-medium text-slate-700">
                       {documentData ? documentData.wordCount : "—"}
+                    </dd>
+                  </div>
+
+                  <div className="flex justify-between gap-4">
+                    <dt className="text-slate-500">RAG chunks</dt>
+                    <dd className="font-medium text-slate-700">
+                      {documentData ? documentData.chunkCount : "—"}
                     </dd>
                   </div>
 

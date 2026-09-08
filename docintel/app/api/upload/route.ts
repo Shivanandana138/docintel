@@ -1,54 +1,34 @@
 import { NextResponse } from "next/server";
 import "pdf-parse/worker";
 import { PDFParse } from "pdf-parse";
+import { indexDocument } from "@/lib/rag";
 
 export const runtime = "nodejs";
 
 const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024;
 
-function getFileType(fileName: string, mimeType: string) {
-  const normalizedFileName = fileName.toLowerCase();
+function countWords(text: string) {
+  const normalizedText = text.trim();
 
-  if (
-    mimeType === "application/pdf" ||
-    normalizedFileName.endsWith(".pdf")
-  ) {
-    return "PDF";
+  if (!normalizedText) {
+    return 0;
   }
 
-  if (
-    mimeType === "text/plain" ||
-    normalizedFileName.endsWith(".txt")
-  ) {
-    return "TXT";
-  }
-
-  return "UNKNOWN";
+  return normalizedText.split(/\s+/).length;
 }
 
-function createDocumentResponse(
-  name: string,
-  type: "PDF" | "TXT" | "TEXT",
-  size: number,
-  text: string,
-  pageCount: number | null
-) {
-  const cleanText = text.replace(/\s+/g, " ").trim();
-  const previewLength = 700;
-  const preview = cleanText.slice(0, previewLength);
-  const wordCount = cleanText ? cleanText.split(/\s+/).length : 0;
+function isPdfFile(file: File) {
+  return (
+    file.type === "application/pdf" ||
+    file.name.toLowerCase().endsWith(".pdf")
+  );
+}
 
-  return {
-    id: crypto.randomUUID(),
-    name,
-    type,
-    size,
-    pageCount,
-    characterCount: cleanText.length,
-    wordCount,
-    preview,
-    text: cleanText,
-  };
+function isTextFile(file: File) {
+  return (
+    file.type === "text/plain" ||
+    file.name.toLowerCase().endsWith(".txt")
+  );
 }
 
 async function extractPdfText(file: File) {
@@ -74,6 +54,12 @@ export async function POST(request: Request) {
     const uploadedFile = formData.get("file");
     const pastedText = formData.get("text");
 
+    let rawText = "";
+    let name = "Pasted text";
+    let type = "TEXT";
+    let size = 0;
+    let pageCount: number | null = null;
+
     if (uploadedFile instanceof File) {
       if (uploadedFile.size === 0) {
         return NextResponse.json(
@@ -89,87 +75,80 @@ export async function POST(request: Request) {
         );
       }
 
-      const fileType = getFileType(uploadedFile.name, uploadedFile.type);
+      name = uploadedFile.name;
+      size = uploadedFile.size;
 
-      if (fileType === "UNKNOWN") {
-        return NextResponse.json(
-          { error: "Only PDF and TXT files are supported." },
-          { status: 415 }
-        );
-      }
+      if (isTextFile(uploadedFile)) {
+        rawText = await uploadedFile.text();
+        type = "TXT";
+      } else if (isPdfFile(uploadedFile)) {
+        const pdfDocument = await extractPdfText(uploadedFile);
 
-      if (fileType === "TXT") {
-        const text = await uploadedFile.text();
-
-        if (!text.trim()) {
-          return NextResponse.json(
-            { error: "The TXT file does not contain readable text." },
-            { status: 400 }
-          );
-        }
-
-        return NextResponse.json({
-          success: true,
-          document: createDocumentResponse(
-            uploadedFile.name,
-            "TXT",
-            uploadedFile.size,
-            text,
-            null
-          ),
-        });
-      }
-
-      const pdfDocument = await extractPdfText(uploadedFile);
-
-      if (!pdfDocument.text.trim()) {
+        rawText = pdfDocument.text;
+        pageCount = pdfDocument.pageCount;
+        type = "PDF";
+      } else {
         return NextResponse.json(
           {
             error:
-              "No readable text was found in this PDF. It may be a scanned image PDF and require OCR.",
+              "Unsupported file type. Please upload a PDF file or a TXT file.",
           },
-          { status: 400 }
+          { status: 415 }
         );
       }
-
-      return NextResponse.json({
-        success: true,
-        document: createDocumentResponse(
-          uploadedFile.name,
-          "PDF",
-          uploadedFile.size,
-          pdfDocument.text,
-          pdfDocument.pageCount
-        ),
-      });
+    } else if (typeof pastedText === "string" && pastedText.trim()) {
+      rawText = pastedText.trim();
+      name = "Pasted text";
+      type = "TEXT";
+      size = new Blob([rawText]).size;
+    } else {
+      return NextResponse.json(
+        { error: "Upload a PDF/TXT file or paste text before analyzing." },
+        { status: 400 }
+      );
     }
 
-    if (typeof pastedText === "string" && pastedText.trim()) {
-      const text = pastedText.trim();
+    const text = rawText.replace(/\s+/g, " ").trim();
 
-      return NextResponse.json({
-        success: true,
-        document: createDocumentResponse(
-          "Pasted document text",
-          "TEXT",
-          new Blob([text]).size,
-          text,
-          null
-        ),
-      });
+    if (!text) {
+      const error =
+        type === "PDF"
+          ? "No readable text was found in this PDF. It may be scanned and require OCR."
+          : "The document does not contain readable text.";
+
+      return NextResponse.json({ error }, { status: 400 });
     }
 
-    return NextResponse.json(
-      { error: "Upload a PDF/TXT file or paste document text first." },
-      { status: 400 }
-    );
+    const documentId = crypto.randomUUID();
+
+    const indexingResult = await indexDocument(documentId, text);
+
+    return NextResponse.json({
+      success: true,
+      document: {
+        id: documentId,
+        name,
+        type,
+        size,
+        pageCount,
+        characterCount: text.length,
+        wordCount: countWords(text),
+        chunkCount: indexingResult.chunkCount,
+        preview: text.slice(0, 700),
+        text,
+      },
+    });
   } catch (error) {
-    console.error("Document upload error:", error);
+    console.error("Document upload/indexing error:", error);
+
+    const detailedMessage =
+      error instanceof Error
+        ? error.message
+        : "Unknown document-processing error.";
 
     return NextResponse.json(
       {
-        error:
-          "Unable to process the document. Please try another PDF, TXT file, or pasted text.",
+        error: `Unable to process and index the document: ${detailedMessage}`,
       },
       { status: 500 }
     );

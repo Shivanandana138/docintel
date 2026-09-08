@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
+import { retrieveRelevantChunks } from "@/lib/rag";
 
 export const runtime = "nodejs";
 
 type ChatRequest = {
   question?: unknown;
-  documentText?: unknown;
+  documentId?: unknown;
 };
 
 export async function POST(request: Request) {
@@ -27,10 +28,8 @@ export async function POST(request: Request) {
     const question =
       typeof body.question === "string" ? body.question.trim() : "";
 
-    const documentText =
-      typeof body.documentText === "string"
-        ? body.documentText.trim()
-        : "";
+    const documentId =
+      typeof body.documentId === "string" ? body.documentId.trim() : "";
 
     if (!question) {
       return NextResponse.json(
@@ -39,36 +38,57 @@ export async function POST(request: Request) {
       );
     }
 
-    if (!documentText) {
+    if (!documentId) {
       return NextResponse.json(
-        { error: "Document text is required." },
+        {
+          error:
+            "A document ID is required. Analyze a document before asking questions.",
+        },
         { status: 400 }
       );
     }
 
+    const retrievedChunks = await retrieveRelevantChunks(
+      documentId,
+      question,
+      3
+    );
+
+    const context = retrievedChunks
+      .map(
+        (chunk) =>
+          `[Source chunk ${chunk.chunkIndex} | relevance score: ${chunk.score.toFixed(
+            3
+          )}]
+
+${chunk.text}`
+      )
+      .join("\n\n---\n\n");
+
     const ai = new GoogleGenAI({ apiKey });
-    const documentContext = documentText.slice(0, 16000);
 
-    const prompt = `You are DocIntel, a document question-answering assistant.
+    const prompt = `You are DocIntel, a Retrieval-Augmented Generation document assistant.
 
-Answer ONLY from the supplied document content.
+Answer the user's question using ONLY the retrieved document chunks below.
 
 Rules:
 - Do not use outside knowledge.
-- Do not invent facts or assumptions.
-- If the answer is not found in the document, say exactly:
-"I could not find that information in the document."
-- Keep the answer concise, direct, and useful.
-- Quote a short phrase from the document when useful as evidence.
+- Do not invent facts.
+- If the retrieved chunks do not contain the answer, say exactly:
+"I could not find that information in the retrieved document sections."
+- Keep the answer concise and useful.
+- End every answer with a separate line in this exact format:
+Sources: 1, 2
+- Use only the source chunk numbers that support your answer.
 
-Document content:
-${documentContext}
+Retrieved document chunks:
+${context}
 
 Question:
 ${question}`;
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.1-flash-lite",
+      model: "gemini-3.8-flash",
       contents: prompt,
       config: {
         temperature: 0.2,
@@ -87,16 +107,20 @@ ${question}`;
     return NextResponse.json({
       success: true,
       answer,
+      sources: retrievedChunks.map((chunk) => ({
+        chunkIndex: chunk.chunkIndex,
+        relevanceScore: Number(chunk.score.toFixed(3)),
+      })),
     });
   } catch (error) {
-    console.error("Document chat error:", error);
+    console.error("RAG chat error:", error);
 
     const detailedMessage =
-      error instanceof Error ? error.message : "Unknown Gemini error.";
+      error instanceof Error ? error.message : "Unknown RAG chat error.";
 
     return NextResponse.json(
       {
-        error: `Gemini chat failed: ${detailedMessage}`,
+        error: `Unable to answer from document retrieval: ${detailedMessage}`,
       },
       { status: 500 }
     );
